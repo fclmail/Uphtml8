@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Flash Loan Arbitrage DApp</title>
+  <script src="https://cdn.jsdelivr.net/npm/ethers/dist/ethers.min.js"></script>
+  <style>
+    body {
+      background-color: #0a2a12;
+      color: #d4ffd9;
+      font-family: Arial, sans-serif;
+      padding: 20px;
+    }
+    h1 {
+      color: #84fba7;
+    }
+    label, input, select, button {
+      display: block;
+      margin: 10px 0;
+    }
+    button {
+      background-color: #16c172;
+      color: black;
+      border: none;
+      padding: 10px 20px;
+      font-size: 1rem;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    button:hover {
+      background-color: #1fe189;
+    }
+    .field {
+      margin-bottom: 10px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 20px;
+    }
+    table, th, td {
+      border: 1px solid #16c172;
+    }
+    th, td {
+      padding: 8px;
+      text-align: center;
+    }
+    .highlight {
+      background-color: lime;
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+  <h1>Flash Loan Arbitrage DApp</h1>
+  <button onclick="connectWallet()">Connect MetaMask</button>
+  <div id="walletAddress"></div>
+
+  <div class="field">
+    <label for="buyRouter">Buy Router:</label>
+    <select id="buyRouter"></select>
+  </div>
+
+  <div class="field">
+    <label for="sellRouter">Sell Router:</label>
+    <select id="sellRouter"></select>
+  </div>
+
+  <div class="field">
+    <label for="token">Select Token:</label>
+    <select id="token"></select>
+  </div>
+
+  <div class="field">
+    <label for="tradeAmount">USDC Trade Amount:</label>
+    <input type="number" id="tradeAmount" step="0.001" value="10">
+  </div>
+
+  <div class="field">
+    <label for="flashLoanToggle">Use Flash Loan:</label>
+    <select id="flashLoanToggle">
+      <option value="true">Yes</option>
+      <option value="false">No</option>
+    </select>
+  </div>
+
+  <div class="field">
+    <label for="flashLoanProvider">Flash Loan Provider:</label>
+    <select id="flashLoanProvider">
+      <option value="DODO">DODO</option>
+      <option value="AAVE">AAVE</option>
+    </select>
+  </div>
+
+  <button onclick="startLoop()">Start Arbitrage Loop</button>
+
+  <div id="status"></div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Time</th>
+        <th>Token</th>
+        <th>Buy Router</th>
+        <th>Sell Router</th>
+        <th>Profit ($)</th>
+        <th>Profit (%)</th>
+        <th>Status</th>
+        <th>Tx Hash</th>
+      </tr>
+    </thead>
+    <tbody id="logTable"></tbody>
+  </table>
+
+  <script>
+    const contractAddress = "0x502BDb3E4AD87E6A940A0becA74eEEF117b2CBAA";
+    const ownerAddress = "0xYOUR_OWNER_ADDRESS_HERE"; // Replace with actual contract owner
+    const contractABI = [
+      {
+        "inputs": [
+          { "internalType": "address", "name": "buyRouter", "type": "address" },
+          { "internalType": "address", "name": "sellRouter", "type": "address" },
+          { "internalType": "address", "name": "token", "type": "address" },
+          { "internalType": "uint256", "name": "amountIn", "type": "uint256" },
+          { "internalType": "bool", "name": "useFlashLoan", "type": "bool" },
+          { "internalType": "string", "name": "flashLoanProvider", "type": "string" }
+        ],
+        "name": "executeArbitrage",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+      }
+    ];
+
+    const tokens = [
+      {symbol: "WETH", address: "0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619"},
+      {symbol: "WBTC", address: "0x1bfd67037b42cf73acf2047067bd4f2c47d9bfd6"},
+      {symbol: "DAI", address: "0x8f3Cf7ad23Cd3CaDbD9735AFf958023239c6A063"},
+      {symbol: "LINK", address: "0x53e0bca35ec356bd5dddfebbd1fc0fd03fabad39"},
+      {symbol: "AAVE", address: "0xd6df932a45c0f255f85145f286ea0b292b21c90b"},
+      {symbol: "UNI", address: "0xb33EaAd8d922B1083446DC23f610c2567fB5180f"}
+    ];
+
+    const routers = [
+      {name: "QuickSwap", address: "0xa5E0829CaCED8fFDD4De3c43696c57F7D7A678ff"},
+      {name: "SushiSwap", address: "0x1b02da8cb0d097eb8d57a175b88c7d8b47997506"},
+      {name: "Uniswap", address: "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"}
+    ];
+
+    let signer;
+    let arbitrageContract;
+    let walletConnected = false;
+    let loopStarted = false;
+
+    async function connectWallet() {
+      if (typeof window.ethereum !== 'undefined') {
+        try {
+          const provider = new ethers.providers.Web3Provider(window.ethereum, 'any');
+          await provider.send("eth_requestAccounts", []);
+          signer = provider.getSigner();
+          const address = await signer.getAddress();
+          document.getElementById("walletAddress").innerText = `Connected: ${address}`;
+          arbitrageContract = new ethers.Contract(contractAddress, contractABI, signer);
+          walletConnected = true;
+          populateDropdowns();
+          if (address.toLowerCase() !== ownerAddress.toLowerCase()) {
+            alert("Connected wallet is not the contract owner. Arbitrage loop will be disabled.");
+            document.querySelector("button[onclick='startLoop()']").disabled = true;
+          }
+        } catch (error) {
+          console.error("Wallet connection error:", error);
+          alert("Failed to connect wallet.");
+        }
+      } else {
+        alert("MetaMask not detected!");
+      }
+    }
+
+    function populateDropdowns() {
+      const buyRouterSelect = document.getElementById("buyRouter");
+      const sellRouterSelect = document.getElementById("sellRouter");
+      const tokenSelect = document.getElementById("token");
+
+      if (buyRouterSelect.options.length > 0) return;
+
+      routers.forEach(router => {
+        const option1 = new Option(router.name, router.address);
+        const option2 = new Option(router.name, router.address);
+        buyRouterSelect.appendChild(option1);
+        sellRouterSelect.appendChild(option2);
+      });
+
+      tokens.forEach(token => {
+        const tokenOption = new Option(token.symbol, token.address);
+        tokenOption.dataset.symbol = token.symbol;
+        tokenSelect.appendChild(tokenOption);
+      });
+    }
+
+    async function startLoop() {
+      if (!walletConnected) {
+        alert("Please connect MetaMask first.");
+        return;
+      }
+      if (loopStarted) return;
+      loopStarted = true;
+
+      setInterval(async () => {
+        const buyRouter = routers.find(r => r.address === document.getElementById("buyRouter").value);
+        const sellRouter = routers.find(r => r.address === document.getElementById("sellRouter").value);
+        const token = tokens.find(t => t.address === document.getElementById("token").value);
+        const useFlashLoan = document.getElementById("flashLoanToggle").value === "true";
+        const flashLoanProvider = document.getElementById("flashLoanProvider").value;
+        const amount = parseFloat(document.getElementById("tradeAmount").value || "10");
+        const dummyProfit = Math.random() * 10;
+        const dummyPercent = dummyProfit / amount * 100;
+        const row = document.createElement("tr");
+
+        row.innerHTML = `<td>${new Date().toLocaleTimeString()}</td><td>${token.symbol}</td><td>${buyRouter.name}</td><td>${sellRouter.name}</td><td>$${dummyProfit.toFixed(2)}</td><td>${dummyPercent.toFixed(2)}%</td><td>${dummyProfit > 0 ? 'Profitable' : 'Not Profitable'}</td><td></td>`;
+
+        if (dummyProfit > 0) {
+          row.classList.add("highlight");
+          try {
+            const tx = await arbitrageContract.executeArbitrage(
+              buyRouter.address,
+              sellRouter.address,
+              token.address,
+              ethers.utils.parseUnits(amount.toString(), 6),
+              useFlashLoan,
+              flashLoanProvider
+            );
+            await tx.wait();
+            row.children[7].innerText = tx.hash;
+          } catch (err) {
+            row.children[6].innerText = `Error: ${err.message}`;
+          }
+        }
+
+        document.getElementById("logTable").prepend(row);
+      }, 15000); // 15 seconds
+    }
+  </script>
+</body>
+</html>
